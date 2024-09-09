@@ -32,10 +32,16 @@ import htsjdk.samtools.util.AbstractLocusIterator;
 import htsjdk.samtools.util.AbstractRecordAndOffset;
 import htsjdk.samtools.util.ProgressLogger;
 import htsjdk.samtools.util.Log;
+import org.checkerframework.checker.units.qual.A;
 import picard.filter.CountingFilter;
 import picard.filter.CountingPairedFilter;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.stream.LongStream;
 
 /**
@@ -61,6 +67,8 @@ public class WgsMetricsProcessorImpl<T extends AbstractRecordAndOffset> implemen
      */
     private final ProgressLogger progress;
 
+    public static final int BatchSize = 1000;
+
     private final Log log = Log.getInstance(WgsMetricsProcessorImpl.class);
 
     /**
@@ -70,9 +78,9 @@ public class WgsMetricsProcessorImpl<T extends AbstractRecordAndOffset> implemen
      * @param progress  logger
      */
     public WgsMetricsProcessorImpl(AbstractLocusIterator<T, AbstractLocusInfo<T>> iterator,
-            ReferenceSequenceFileWalker refWalker,
-            AbstractWgsMetricsCollector<T> collector,
-            ProgressLogger progress) {
+                                   ReferenceSequenceFileWalker refWalker,
+                                   AbstractWgsMetricsCollector<T> collector,
+                                   ProgressLogger progress) {
         this.iterator = iterator;
         this.collector = collector;
         this.refWalker = refWalker;
@@ -85,12 +93,32 @@ public class WgsMetricsProcessorImpl<T extends AbstractRecordAndOffset> implemen
     @Override
     public void processFile() {
         long counter = 0;
+        List<AbstractLocusInfo<T>> infoBatch = new ArrayList<>(BatchSize);
+        List<ReferenceSequence> refBatch = new ArrayList<>(BatchSize);
+        List<Boolean> refBaseNList = new ArrayList<>(BatchSize);
+        Semaphore sem = new Semaphore(2);
+        ExecutorService service = Executors.newSingleThreadExecutor();
 
+        //---------------------------------------------We should improve this loop--------------------------------------------
         while (iterator.hasNext()) {
             final AbstractLocusInfo<T> info = iterator.next();
             final ReferenceSequence ref = refWalker.get(info.getSequenceIndex());
             boolean referenceBaseN = collector.isReferenceBaseN(info.getPosition(), ref);
-            collector.addInfo(info, ref, referenceBaseN);
+
+            infoBatch.add(info);
+            refBatch.add(ref);
+            refBaseNList.add(referenceBaseN);
+
+            //-----------------------------------------------Improved-------------------------------------------------------
+            if(infoBatch.size() == BatchSize) {
+                sem.acquireUninterruptibly();
+                worker(service, infoBatch, refBatch, refBaseNList, sem);
+                infoBatch = new ArrayList<>(BatchSize);
+                refBatch = new ArrayList<>(BatchSize);
+                refBaseNList = new ArrayList<>(BatchSize);
+            }
+            //----------------------------------------------------------------------------------------------------------------
+
             if (referenceBaseN) {
                 continue;
             }
@@ -101,6 +129,8 @@ public class WgsMetricsProcessorImpl<T extends AbstractRecordAndOffset> implemen
             }
             collector.setCounter(counter);
         }
+        //-------------------------------------------------------------------------------------------------------------------
+
         // check that we added the same number of bases to the raw coverage histogram and the base quality histograms
         final long sumBaseQ = Arrays.stream(collector.unfilteredBaseQHistogramArray).sum();
         final long sumDepthHisto = LongStream.rangeClosed(0, collector.coverageCap).map(i -> (i * collector.unfilteredDepthHistogramArray[(int) i])).sum();
@@ -109,13 +139,27 @@ public class WgsMetricsProcessorImpl<T extends AbstractRecordAndOffset> implemen
         }
     }
 
+    public void worker(ExecutorService service,
+                       List<AbstractLocusInfo<T>> infoBatch,
+                       List<ReferenceSequence> refBatch,
+                       List<Boolean> refBaseNList,
+                       Semaphore sem){
+        service.submit(() -> {
+            for(int i = 0; i < infoBatch.size(); i++){
+                collector.addInfo(infoBatch.get(i), refBatch.get(i), refBaseNList.get(i));
+            }
+            sem.release();
+        });
+
+    }
+
     @Override
     public void addToMetricsFile(MetricsFile<WgsMetrics, Integer> file,
-            boolean includeBQHistogram,
-            CountingFilter dupeFilter,
-            CountingFilter adapterFilter,
-            CountingFilter mapqFilter,
-            CountingPairedFilter pairFilter) {
+                                 boolean includeBQHistogram,
+                                 CountingFilter dupeFilter,
+                                 CountingFilter adapterFilter,
+                                 CountingFilter mapqFilter,
+                                 CountingPairedFilter pairFilter) {
         collector.addToMetricsFile(file, includeBQHistogram, dupeFilter, adapterFilter, mapqFilter, pairFilter);
     }
 }

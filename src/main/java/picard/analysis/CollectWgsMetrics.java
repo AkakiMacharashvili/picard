@@ -48,6 +48,7 @@ import org.broadinstitute.barclay.argparser.Argument;
 import org.broadinstitute.barclay.argparser.ArgumentCollection;
 import org.broadinstitute.barclay.argparser.CommandLineProgramProperties;
 import org.broadinstitute.barclay.help.DocumentedFeature;
+import org.checkerframework.checker.units.qual.A;
 import picard.PicardException;
 import picard.cmdline.CommandLineProgram;
 import picard.cmdline.StandardOptionDefinitions;
@@ -65,6 +66,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static picard.cmdline.StandardOptionDefinitions.MINIMUM_MAPPING_QUALITY_SHORT_NAME;
 
@@ -82,24 +89,26 @@ import static picard.cmdline.StandardOptionDefinitions.MINIMUM_MAPPING_QUALITY_S
 )
 @DocumentedFeature
 public class CollectWgsMetrics extends CommandLineProgram {
-static final String USAGE_SUMMARY = "Collect metrics about coverage and performance of whole genome sequencing (WGS) experiments.";
-static final String USAGE_DETAILS = "<p>This tool collects metrics about the fractions of reads that pass base- and mapping-quality "+
-"filters as well as coverage (read-depth) levels for WGS analyses. Both minimum base- and mapping-quality values as well as the maximum "+
-"read depths (coverage cap) are user defined.</p>" +
 
-"<p>Note: Metrics labeled as percentages are actually expressed as fractions!</p>"+
-"<h4>Usage Example:</h4>"+
-"<pre>"  +
-"java -jar picard.jar CollectWgsMetrics \\<br /> " +
-"      I=input.bam \\<br /> "+
-"      O=collect_wgs_metrics.txt \\<br /> " +
-"      R=reference_sequence.fasta " +
-"</pre>" +
-"Please see "+
-"<a href='https://broadinstitute.github.io/picard/picard-metric-definitions.html#CollectWgsMetrics.WgsMetrics'>CollectWgsMetrics</a> "+
-"for detailed explanations of the output metrics." +
-"<hr />"
-;
+    static final String USAGE_SUMMARY = "Collect metrics about coverage and performance of whole genome sequencing (WGS) experiments.";
+    static final String USAGE_DETAILS = "<p>This tool collects metrics about the fractions of reads that pass base- and mapping-quality "+
+            "filters as well as coverage (read-depth) levels for WGS analyses. Both minimum base- and mapping-quality values as well as the maximum "+
+            "read depths (coverage cap) are user defined.</p>" +
+
+            "<p>Note: Metrics labeled as percentages are actually expressed as fractions!</p>"+
+            "<h4>Usage Example:</h4>"+
+            "<pre>"  +
+            "java -jar picard.jar CollectWgsMetrics \\<br /> " +
+            "      I=input.bam \\<br /> "+
+            "      O=collect_wgs_metrics.txt \\<br /> " +
+            "      R=reference_sequence.fasta " +
+            "</pre>" +
+            "Please see "+
+            "<a href='https://broadinstitute.github.io/picard/picard-metric-definitions.html#CollectWgsMetrics.WgsMetrics'>CollectWgsMetrics</a> "+
+            "for detailed explanations of the output metrics." +
+            "<hr />"
+            ;
+    public static int BatchSize = 1000;
 
     @Argument(shortName = StandardOptionDefinitions.INPUT_SHORT_NAME, doc = "Input SAM/BAM/CRAM file.")
     public File INPUT;
@@ -188,6 +197,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
     @Override
     protected int doWork() {
+        //-----------------------------------------just initialization and checking---------------------------------------------------------
         IOUtil.assertFileIsReadable(INPUT);
         IOUtil.assertFileIsWritable(OUTPUT);
         IOUtil.assertFileIsReadable(REFERENCE_SEQUENCE);
@@ -219,7 +229,11 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                     refWalker.getSequenceDictionary(),
                     REFERENCE_SEQUENCE.getAbsolutePath());
         }
+        //------------------------------------------------------------------------------------------------------------------------------
 
+
+
+        //---------------------------------------------------creating filters-----------------------------------------------------------
         final List<SamRecordFilter> filters = new ArrayList<>();
         final CountingFilter adapterFilter = new CountingAdapterFilter();
         final CountingFilter mapqFilter = new CountingMapQFilter(MINIMUM_MAPPING_QUALITY);
@@ -233,18 +247,32 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         if (!COUNT_UNPAIRED) {
             filters.add(pairFilter);
         }
+        //------------------------------------------------------------------------------------------------------------------------------
+
+
+        //-----------------------------------------Again initializing some stuff--------------------------------------------------------
         iterator.setSamFilters(filters);
         iterator.setMappingQualityScoreCutoff(0); // Handled separately because we want to count bases
         iterator.setIncludeNonPfReads(false);
 
         final AbstractWgsMetricsCollector<?> collector = getCollector(COVERAGE_CAP, getIntervalsToExamine());
         final WgsMetricsProcessor processor = getWgsMetricsProcessor(progress, refWalker, iterator, collector);
-        processor.processFile();
+        //------------------------------------------------------------------------------------------------------------------------------
 
+
+        //--------------------------------------------------Main method to update-------------------------------------------------------
+        processor.processFile();
+        //------------------------------------------------------------------------------------------------------------------------------
+
+
+        //--------------------------------------------------May have little update------------------------------------------------------
         final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
         processor.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, adapterFilter, mapqFilter, pairFilter);
         out.write(OUTPUT);
+        //------------------------------------------------------------------------------------------------------------------------------
 
+
+        //------------------------------------------------------Some extra stuff--------------------------------------------------------
         if (THEORETICAL_SENSITIVITY_OUTPUT != null) {
             // Write out theoretical sensitivity results.
             final MetricsFile<TheoreticalSensitivityMetrics, ?> theoreticalSensitivityMetrics = getMetricsFile();
@@ -253,6 +281,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             theoreticalSensitivityMetrics.addAllMetrics(tsm);
             theoreticalSensitivityMetrics.write(THEORETICAL_SENSITIVITY_OUTPUT);
         }
+        //------------------------------------------------------------------------------------------------------------------------------
 
         return 0;
     }
@@ -319,18 +348,18 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
     }
 
     WgsMetrics generateWgsMetrics(final IntervalList intervals,
-                                          final Histogram<Integer> highQualityDepthHistogram,
-                                          final Histogram<Integer> unfilteredDepthHistogram,
-                                          final long basesExcludedByAdapter,
-                                          final long basesExcludedByMapq,
-                                          final long basesExcludedByDupes,
-                                          final long basesExcludedByPairing,
-                                          final long basesExcludedByBaseq,
-                                          final long basesExcludedByOverlap,
-                                          final long basesExcludedByCapping,
-                                          final int coverageCap,
-                                          final Histogram<Integer> unfilteredBaseQHistogram,
-                                          final int theoreticalHetSensitivitySampleSize) {
+                                  final Histogram<Integer> highQualityDepthHistogram,
+                                  final Histogram<Integer> unfilteredDepthHistogram,
+                                  final long basesExcludedByAdapter,
+                                  final long basesExcludedByMapq,
+                                  final long basesExcludedByDupes,
+                                  final long basesExcludedByPairing,
+                                  final long basesExcludedByBaseq,
+                                  final long basesExcludedByOverlap,
+                                  final long basesExcludedByCapping,
+                                  final int coverageCap,
+                                  final Histogram<Integer> unfilteredBaseQHistogram,
+                                  final int theoreticalHetSensitivitySampleSize) {
         final double total = highQualityDepthHistogram.getSum();
         final double totalWithExcludes = total + basesExcludedByDupes + basesExcludedByAdapter + basesExcludedByMapq + basesExcludedByPairing + basesExcludedByBaseq + basesExcludedByOverlap + basesExcludedByCapping;
 
@@ -409,40 +438,105 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
         @Override
         public void addInfo(final AbstractLocusInfo<SamLocusIterator.RecordAndOffset> info, final ReferenceSequence ref, boolean referenceBaseN) {
-
+            //---------------------------------------------Some base things and initializing----------------------------------------------------
             if (referenceBaseN) {
                 return;
             }
             // Figure out the coverage while not counting overlapping reads twice, and excluding various things
             final HashSet<String> readNames = new HashSet<>(info.getRecordAndOffsets().size());
-            int pileupSize = 0;
-            int unfilteredDepth = 0;
+            AtomicInteger unfilteredDepth = new AtomicInteger(0);
+            AtomicInteger pileupSize = new AtomicInteger(0);
 
+            //----------------------------------------------------------------------------------------------------------------------------------
+
+
+
+            //---------------------------------------------------------Improved-----------------------------------------------------------------
+
+            ReentrantLock basesExcludedByBaseqLock = new ReentrantLock();
+            ReentrantLock unfilteredDepthLock = new ReentrantLock();
+            ReentrantLock basesExcludedByOverlapLock = new ReentrantLock();
+            ReentrantLock pileupSizeLock = new ReentrantLock();
+
+            ExecutorService service = Executors.newFixedThreadPool(3);
+
+            // Loop through record offsets, adding each task to the ExecutorService
             for (final SamLocusIterator.RecordAndOffset recs : info.getRecordAndOffsets()) {
-                if (recs.getBaseQuality() <= 2) { ++basesExcludedByBaseq;   continue; }
+                service.submit(() -> {
+                    try {
+                        if (recs.getBaseQuality() <= 2) {
+                            // Lock and increment basesExcludedByBaseq
+                            basesExcludedByBaseqLock.lock();
+                            try {
+                                ++basesExcludedByBaseq;
+                            } finally {
+                                basesExcludedByBaseqLock.unlock();
+                            }
+                            return;
+                        }
 
-                // we add to the base quality histogram any bases that have quality > 2
-                // the raw depth may exceed the coverageCap before the high-quality depth does. So stop counting once we reach the coverage cap.
-                if (unfilteredDepth < coverageCap) {
-                    unfilteredBaseQHistogramArray[recs.getRecord().getBaseQualities()[recs.getOffset()]]++;
-                    unfilteredDepth++;
-                }
+                        // Add to the base quality histogram any bases that have quality > 2
+                        // Stop counting once we reach the coverage cap.
+                        if (unfilteredDepth.get() < coverageCap) {
+                            // Lock and increment unfilteredDepth and update the histogram
+                            unfilteredDepthLock.lock();
+                            try {
+                                unfilteredBaseQHistogramArray[recs.getRecord().getBaseQualities()[recs.getOffset()]]++;
+                                unfilteredDepth.incrementAndGet();
+                            } finally {
+                                unfilteredDepthLock.unlock();
+                            }
+                        }
 
-                if (recs.getBaseQuality() < collectWgsMetrics.MINIMUM_BASE_QUALITY ||
-                        SequenceUtil.isNoCall(recs.getReadBase())) {
-                    ++basesExcludedByBaseq;
-                    continue;
-                }
-                if (!readNames.add(recs.getRecord().getReadName())) {
-                    ++basesExcludedByOverlap;
-                    continue;
-                }
-                pileupSize++;
+                        if (recs.getBaseQuality() < collectWgsMetrics.MINIMUM_BASE_QUALITY ||
+                                SequenceUtil.isNoCall(recs.getReadBase())) {
+                            // Lock and increment basesExcludedByBaseq
+                            basesExcludedByBaseqLock.lock();
+                            try {
+                                ++basesExcludedByBaseq;
+                            } finally {
+                                basesExcludedByBaseqLock.unlock();
+                            }
+                            return;
+                        }
+
+                        if (!readNames.add(recs.getRecord().getReadName())) {
+                            // Lock and increment basesExcludedByOverlap
+                            basesExcludedByOverlapLock.lock();
+                            try {
+                                ++basesExcludedByOverlap;
+                            } finally {
+                                basesExcludedByOverlapLock.unlock();
+                            }
+                            return;
+                        }
+
+                        // Lock and increment pileupSize
+                        pileupSizeLock.lock();
+                        try {
+                            pileupSize.incrementAndGet();
+                        } finally {
+                            pileupSizeLock.unlock();
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();  // Handle exceptions appropriately
+                    }
+                });
             }
-            final int highQualityDepth = Math.min(pileupSize, coverageCap);
-            if (highQualityDepth < pileupSize) basesExcludedByCapping += pileupSize - coverageCap;
+
+            // Shutdown the ExecutorService after all tasks are submitted
+            service.shutdown();
+            //----------------------------------------------------------------------------------------------------------------------------------
+
+
+            //----------------------------------------------------Just some calculation----------------------------------------------------------
+            final int highQualityDepth = Math.min(pileupSize.get(), coverageCap);
+            if (highQualityDepth < pileupSize.get()) {
+                basesExcludedByCapping += pileupSize.get() - coverageCap;
+            }
             highQualityDepthHistogramArray[highQualityDepth]++;
-            unfilteredDepthHistogramArray[unfilteredDepth]++;
+            unfilteredDepthHistogramArray[unfilteredDepth.get()]++;
+            //----------------------------------------------------------------------------------------------------------------------------------
         }
     }
 }
