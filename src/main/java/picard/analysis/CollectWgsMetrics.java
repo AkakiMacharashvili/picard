@@ -66,12 +66,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 import static picard.cmdline.StandardOptionDefinitions.MINIMUM_MAPPING_QUALITY_SHORT_NAME;
 
@@ -89,7 +85,6 @@ import static picard.cmdline.StandardOptionDefinitions.MINIMUM_MAPPING_QUALITY_S
 )
 @DocumentedFeature
 public class CollectWgsMetrics extends CommandLineProgram {
-
     static final String USAGE_SUMMARY = "Collect metrics about coverage and performance of whole genome sequencing (WGS) experiments.";
     static final String USAGE_DETAILS = "<p>This tool collects metrics about the fractions of reads that pass base- and mapping-quality "+
             "filters as well as coverage (read-depth) levels for WGS analyses. Both minimum base- and mapping-quality values as well as the maximum "+
@@ -108,7 +103,6 @@ public class CollectWgsMetrics extends CommandLineProgram {
             "for detailed explanations of the output metrics." +
             "<hr />"
             ;
-    public static int BatchSize = 1000;
 
     @Argument(shortName = StandardOptionDefinitions.INPUT_SHORT_NAME, doc = "Input SAM/BAM/CRAM file.")
     public File INPUT;
@@ -434,7 +428,118 @@ public class CollectWgsMetrics extends CommandLineProgram {
 
         public WgsMetricsCollector(final CollectWgsMetrics metrics, final int coverageCap, final IntervalList intervals) {
             super(metrics, coverageCap, intervals);
+
         }
+
+        int BATCH_SIZE = 1000;
+//        @Override
+//        public void addInfo(final AbstractLocusInfo<SamLocusIterator.RecordAndOffset> info, final ReferenceSequence ref, boolean referenceBaseN) {
+//            System.out.println("addInfo called for position: " + info.getPosition() + " on sequence: " + info.getSequenceName());
+//
+//            //---------------------------------------------Some base things and initializing----------------------------------------------------
+//            if (referenceBaseN) {
+//                return;
+//            }
+//            // Figure out the coverage while not counting overlapping reads twice, and excluding various things
+//            final HashSet<String> readNames = new HashSet<>(info.getRecordAndOffsets().size());
+//            AtomicInteger pileupSize = new AtomicInteger();
+//            AtomicInteger unfilteredDepth = new AtomicInteger();
+//            //----------------------------------------------------------------------------------------------------------------------------------
+//
+//            List<SamLocusIterator.RecordAndOffset> recBatch = new ArrayList<>(BATCH_SIZE);
+//            ExecutorService service = Executors.newFixedThreadPool(3);
+//            Semaphore sem = new Semaphore(5);
+//
+//            //---------------------------------------------------------Improve It?!-----------------------------------------------------------------
+//            for (final SamLocusIterator.RecordAndOffset recs : info.getRecordAndOffsets()) {
+//                recBatch.add(recs);
+//
+//                if(recBatch.size() == BATCH_SIZE){
+//                    List<SamLocusIterator.RecordAndOffset> recB = new ArrayList<>(recBatch);
+//
+//
+//                    sem.acquireUninterruptibly();
+//                    service.submit(() -> {
+//                        for (SamLocusIterator.RecordAndOffset batch : recB) {
+//                            if (batch.getBaseQuality() <= 2) {
+//                                ++basesExcludedByBaseq;
+//                                continue;
+//                            }
+//
+//                            // we add to the base quality histogram any bases that have quality > 2
+//                            // the raw depth may exceed the coverageCap before the high-quality depth does. So stop counting once we reach the coverage cap.
+//                            if (unfilteredDepth.get() < coverageCap) {
+//                                unfilteredBaseQHistogramArray[batch.getRecord().getBaseQualities()[batch.getOffset()]]++;
+//                                unfilteredDepth.incrementAndGet();
+//                            }
+//
+//                            if (batch.getBaseQuality() < collectWgsMetrics.MINIMUM_BASE_QUALITY ||
+//                                    SequenceUtil.isNoCall(batch.getReadBase())) {
+//                                ++basesExcludedByBaseq;
+//                                continue;
+//                            }
+//
+//                            if (!readNames.add(batch.getRecord().getReadName())) {
+//                                ++basesExcludedByOverlap;
+//                                continue;
+//                            }
+//
+//                            pileupSize.incrementAndGet();
+//                        }
+//                        sem.release();
+//                    });
+
+//                    recBatch = new ArrayList<>(BATCH_SIZE);
+//                }
+//
+//            }
+//
+//
+//            if(!recBatch.isEmpty()){
+//                List<SamLocusIterator.RecordAndOffset> recB = recBatch;
+//                sem.acquireUninterruptibly();
+//                service.submit(() -> {
+//                    for (SamLocusIterator.RecordAndOffset batch : recB) {
+//                        if (batch.getBaseQuality() <= 2) {
+//                            ++basesExcludedByBaseq;
+//                            continue;
+//                        }
+//
+//                        // we add to the base quality histogram any bases that have quality > 2
+//                        // the raw depth may exceed the coverageCap before the high-quality depth does. So stop counting once we reach the coverage cap.
+//                        if (unfilteredDepth.get() < coverageCap) {
+//                            unfilteredBaseQHistogramArray[batch.getRecord().getBaseQualities()[batch.getOffset()]]++;
+//                            unfilteredDepth.incrementAndGet();
+//                        }
+//
+//                        if (batch.getBaseQuality() < collectWgsMetrics.MINIMUM_BASE_QUALITY ||
+//                                SequenceUtil.isNoCall(batch.getReadBase())) {
+//                            ++basesExcludedByBaseq;
+//                            continue;
+//                        }
+//
+//                        if (!readNames.add(batch.getRecord().getReadName())) {
+//                            ++basesExcludedByOverlap;
+//                            continue;
+//                        }
+//
+//                        pileupSize.incrementAndGet();
+//                    }
+//                    sem.release();
+//                });
+//            }
+//            //----------------------------------------------------------------------------------------------------------------------------------
+//
+//
+//            //----------------------------------------------------Just some calculation----------------------------------------------------------
+//            final int highQualityDepth = Math.min(pileupSize.get(), coverageCap);
+//            if (highQualityDepth < pileupSize.get()) basesExcludedByCapping += pileupSize.get() - coverageCap;
+//            highQualityDepthHistogramArray[highQualityDepth]++;
+//            unfilteredDepthHistogramArray[unfilteredDepth.get()]++;
+//            //----------------------------------------------------------------------------------------------------------------------------------
+//        }
+//
+
 
         @Override
         public void addInfo(final AbstractLocusInfo<SamLocusIterator.RecordAndOffset> info, final ReferenceSequence ref, boolean referenceBaseN) {
@@ -444,99 +549,47 @@ public class CollectWgsMetrics extends CommandLineProgram {
             }
             // Figure out the coverage while not counting overlapping reads twice, and excluding various things
             final HashSet<String> readNames = new HashSet<>(info.getRecordAndOffsets().size());
-            AtomicInteger unfilteredDepth = new AtomicInteger(0);
-            AtomicInteger pileupSize = new AtomicInteger(0);
-
+            int pileupSize = 0;
+            int unfilteredDepth = 0;
             //----------------------------------------------------------------------------------------------------------------------------------
 
 
+            //---------------------------------------------------------Improve It?!-----------------------------------------------------------------
 
-            //---------------------------------------------------------Improved-----------------------------------------------------------------
-
-            ReentrantLock basesExcludedByBaseqLock = new ReentrantLock();
-            ReentrantLock unfilteredDepthLock = new ReentrantLock();
-            ReentrantLock basesExcludedByOverlapLock = new ReentrantLock();
-            ReentrantLock pileupSizeLock = new ReentrantLock();
-
-            ExecutorService service = Executors.newFixedThreadPool(3);
-
-            // Loop through record offsets, adding each task to the ExecutorService
             for (final SamLocusIterator.RecordAndOffset recs : info.getRecordAndOffsets()) {
-                service.submit(() -> {
-                    try {
-                        if (recs.getBaseQuality() <= 2) {
-                            // Lock and increment basesExcludedByBaseq
-                            basesExcludedByBaseqLock.lock();
-                            try {
-                                ++basesExcludedByBaseq;
-                            } finally {
-                                basesExcludedByBaseqLock.unlock();
-                            }
-                            return;
-                        }
+                if (recs.getBaseQuality() <= 2) { ++basesExcludedByBaseq;   continue; }
 
-                        // Add to the base quality histogram any bases that have quality > 2
-                        // Stop counting once we reach the coverage cap.
-                        if (unfilteredDepth.get() < coverageCap) {
-                            // Lock and increment unfilteredDepth and update the histogram
-                            unfilteredDepthLock.lock();
-                            try {
-                                unfilteredBaseQHistogramArray[recs.getRecord().getBaseQualities()[recs.getOffset()]]++;
-                                unfilteredDepth.incrementAndGet();
-                            } finally {
-                                unfilteredDepthLock.unlock();
-                            }
-                        }
+                // we add to the base quality histogram any bases that have quality > 2
+                // the raw depth may exceed the coverageCap before the high-quality depth does. So stop counting once we reach the coverage cap.
+                if (unfilteredDepth < coverageCap) {
+                    unfilteredBaseQHistogramArray[recs.getRecord().getBaseQualities()[recs.getOffset()]]++;
+                    unfilteredDepth++;
+                }
 
-                        if (recs.getBaseQuality() < collectWgsMetrics.MINIMUM_BASE_QUALITY ||
-                                SequenceUtil.isNoCall(recs.getReadBase())) {
-                            // Lock and increment basesExcludedByBaseq
-                            basesExcludedByBaseqLock.lock();
-                            try {
-                                ++basesExcludedByBaseq;
-                            } finally {
-                                basesExcludedByBaseqLock.unlock();
-                            }
-                            return;
-                        }
+                if (recs.getBaseQuality() < collectWgsMetrics.MINIMUM_BASE_QUALITY ||
+                        SequenceUtil.isNoCall(recs.getReadBase())) {
+                    ++basesExcludedByBaseq;
+                    continue;
+                }
 
-                        if (!readNames.add(recs.getRecord().getReadName())) {
-                            // Lock and increment basesExcludedByOverlap
-                            basesExcludedByOverlapLock.lock();
-                            try {
-                                ++basesExcludedByOverlap;
-                            } finally {
-                                basesExcludedByOverlapLock.unlock();
-                            }
-                            return;
-                        }
+                if (!readNames.add(recs.getRecord().getReadName())) {
+                    ++basesExcludedByOverlap;
+                    continue;
+                }
 
-                        // Lock and increment pileupSize
-                        pileupSizeLock.lock();
-                        try {
-                            pileupSize.incrementAndGet();
-                        } finally {
-                            pileupSizeLock.unlock();
-                        }
-                    } catch (Exception e) {
-                        e.printStackTrace();  // Handle exceptions appropriately
-                    }
-                });
+                pileupSize++;
             }
-
-            // Shutdown the ExecutorService after all tasks are submitted
-            service.shutdown();
             //----------------------------------------------------------------------------------------------------------------------------------
 
 
             //----------------------------------------------------Just some calculation----------------------------------------------------------
-            final int highQualityDepth = Math.min(pileupSize.get(), coverageCap);
-            if (highQualityDepth < pileupSize.get()) {
-                basesExcludedByCapping += pileupSize.get() - coverageCap;
-            }
+            final int highQualityDepth = Math.min(pileupSize, coverageCap);
+            if (highQualityDepth < pileupSize) basesExcludedByCapping += pileupSize - coverageCap;
             highQualityDepthHistogramArray[highQualityDepth]++;
-            unfilteredDepthHistogramArray[unfilteredDepth.get()]++;
+            unfilteredDepthHistogramArray[unfilteredDepth]++;
             //----------------------------------------------------------------------------------------------------------------------------------
         }
+
+
     }
 }

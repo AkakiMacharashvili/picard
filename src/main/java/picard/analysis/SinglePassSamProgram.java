@@ -157,16 +157,19 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
 
         List<SAMRecord> recBatch = new ArrayList<>(BATCH_SIZE);
         List<ReferenceSequence> refBatch = new ArrayList<>(BATCH_SIZE);
+
         ExecutorService service = Executors.newSingleThreadExecutor();
         Semaphore sem = new Semaphore(2);
 
+        ReferenceSequence ref;
+
         for (final SAMRecord rec : in) {
-            final ReferenceSequence ref;
             if (walker == null || rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
                 ref = null;
             } else {
                 ref = walker.get(rec.getReferenceIndex());
             }
+
             recBatch.add(rec);
             refBatch.add(ref);
 
@@ -177,9 +180,7 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
                 refBatch = new ArrayList<>(BATCH_SIZE);
             }
 
-            if(!recBatch.isEmpty()){
-                submitRecord(programs, service, recBatch, refBatch, sem);
-            }
+
 
             progress.record(rec);
 
@@ -193,7 +194,10 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
                 break;
             }
         }
-        service.shutdown();
+
+        if(!recBatch.isEmpty()){
+            submitRecord(programs, service, recBatch, refBatch, sem);
+        }
 
         CloserUtil.close(in);
 
@@ -202,7 +206,9 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
         }
     }
 
-    private static void submitRecord(Collection<SinglePassSamProgram> programs, ExecutorService service, List<SAMRecord> recBatch, List<ReferenceSequence> refBatch, Semaphore sem) {
+    private static void submitRecord(Collection<SinglePassSamProgram> programs,
+                                     ExecutorService service, List<SAMRecord> recBatch, List<ReferenceSequence> refBatch,
+                                     Semaphore sem) {
         service.submit(() -> {
             for(int i = 0; i < recBatch.size(); i++){
                 for (final SinglePassSamProgram program : programs) {

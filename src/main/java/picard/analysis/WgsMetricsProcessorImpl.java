@@ -129,6 +129,11 @@ public class WgsMetricsProcessorImpl<T extends AbstractRecordAndOffset> implemen
             }
             collector.setCounter(counter);
         }
+
+        if(!infoBatch.isEmpty()){
+            sem.acquireUninterruptibly();
+            worker(service, infoBatch, refBatch, refBaseNList, sem);
+        }
         //-------------------------------------------------------------------------------------------------------------------
 
         // check that we added the same number of bases to the raw coverage histogram and the base quality histograms
